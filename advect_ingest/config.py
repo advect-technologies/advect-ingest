@@ -11,8 +11,6 @@ def _resolve_data_config_path(name='inbound') -> Path:
 
 @dataclass
 class AppConfig:
-    host: str = "0.0.0.0"
-    port: int = 8000
     log_level: str = "INFO"
 
 @dataclass

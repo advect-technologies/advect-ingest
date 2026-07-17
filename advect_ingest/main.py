@@ -33,7 +33,7 @@ app = FastAPI(
 
 @app.get("/", response_class=RedirectResponse)
 async def root():
-    return RedirectResponse("/docs")  # Swagger UI
+    return RedirectResponse("/docs")
 
 @app.get("/health")
 async def health():
@@ -51,7 +51,3 @@ async def ingest_batch(datapoints: list[DataPoint]):
         raise HTTPException(status_code=400, detail="At least one datapoint required")
     await ingest_queue.add_batch(datapoints)
     return {"status": "accepted", "count": len(datapoints)}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host=config.app.host, port=config.app.port)

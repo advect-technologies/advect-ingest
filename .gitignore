@@ -226,3 +226,5 @@ storage-data
 config.toml
 data_config.toml
 .zed
+
+.python-version
