@@ -1,0 +1,9 @@
+[inbound]
+watch_dir = "../ingest/incoming"
+transient_dir = "../ingest/transient"
+long_term_dir = "../ingest/storage"
+
+[[sinks]]
+name = "dummy"
+type = "dummy"
+config.destination_dir = "../output/dummy"
