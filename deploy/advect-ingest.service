@@ -1,0 +1,24 @@
+[Unit]
+Description=IoT Ingest Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/advect-ingest/advect_ingest
+RuntimeDirectory=advect-ingest
+RuntimeDirectoryMode=0770
+RuntimeDirectoryPreserve=yes
+ExecStart=/home/pi/.local/bin/uv run run.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Optional: Increase limits if needed
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
