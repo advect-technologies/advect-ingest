@@ -1,25 +1,33 @@
 import tomllib
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
+
 from loguru import logger as log
 
-def _resolve_config_path(name='config.toml') -> Path:
-    return Path(__file__).parent.parent / 'config' / name
 
-def _resolve_data_config_path(name='inbound') -> Path:
-    return Path(__file__).parent.parent / 'ingest' / name
+def _resolve_config_path(name="config.toml") -> Path:
+    return Path(__file__).parent.parent / "config" / name
+
+
+def _resolve_data_config_path(name="inbound") -> Path:
+    return Path(__file__).parent.parent / "ingest" / name
+
 
 @dataclass
 class AppConfig:
     log_level: str = "INFO"
 
+
 @dataclass
 class IngestConfig:
     watch_dir: str | Path = field(default_factory=lambda: _resolve_data_config_path())
-    config_path: str | Path = field(default_factory=lambda: _resolve_config_path('data_config.toml'))
+    config_path: str | Path = field(
+        default_factory=lambda: _resolve_config_path("data_config.toml")
+    )
     file_suffix: str = ".jsonl"
     flush_period: int = 10
     flush_max_batch: int = 1000
+
 
 @dataclass
 class RootConfig:
@@ -42,7 +50,4 @@ class RootConfig:
             app = raw.get("app", {})
             ingest = raw.get("ingest", {})
 
-        return cls(
-            app=AppConfig(**app),
-            ingest=IngestConfig(**ingest)
-        )
+        return cls(app=AppConfig(**app), ingest=IngestConfig(**ingest))

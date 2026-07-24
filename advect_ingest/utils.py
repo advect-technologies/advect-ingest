@@ -1,8 +1,7 @@
 import asyncio
+import datetime as dt
 import uuid
-from datetime import datetime
 from pathlib import Path
-from typing import List
 
 from loguru import logger as log
 
@@ -45,7 +44,7 @@ class IngestQueue:
         if self.queue.qsize() >= self.config.flush_max_batch:
             self._flush_now.set()
 
-    async def add_batch(self, datapoints: List[DataPoint]):
+    async def add_batch(self, datapoints: list[DataPoint]):
         """Add multiple points."""
         for dp in datapoints:
             await self.queue.put(dp)
@@ -60,9 +59,8 @@ class IngestQueue:
                     await self._flush_now.wait()
                     self._flush_now.clear()
                     log.debug("Flush triggered")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 log.debug("Flush timeout")
-                pass
             await self.flush()
 
     async def flush(self):
@@ -78,7 +76,7 @@ class IngestQueue:
         watch_dir = Path(self.config.watch_dir)
         watch_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = dt.datetime.now(tz=dt.UTC).strftime("%Y%m%d_%H%M%S")
         filename = f"{timestamp}_{uuid.uuid4().hex[:8]}{self.config.file_suffix}"
         file_path = watch_dir / filename
 
