@@ -1,11 +1,14 @@
 import asyncio
 import datetime as dt
+import json
 import uuid
 from pathlib import Path
+from typing import Any
 
+from aiomqtt import Client
 from loguru import logger as log
 
-from .config import IngestConfig
+from .config import HAConfig, HADevice, HASensor, IngestConfig
 from .models import DataPoint
 
 
@@ -88,3 +91,69 @@ class IngestQueue:
         except Exception as e:
             log.error(f"Flush failed: {e}")
             # Could re-queue or handle errors here
+
+
+class HAMqttPublisher:
+    def __init__(self, config: HAConfig):
+        self.config = config
+        self.client: Client | None = None
+        self._discovered: set[str] = (
+            set()
+        )  # track device ids we've already sent discovery for
+
+    async def start(self):
+        if not self.config.active:
+            return
+
+        mqtt = self.config.mqtt
+        self.client = Client(
+            hostname=mqtt.broker,
+            port=mqtt.port,
+            username=mqtt.username or None,
+            password=mqtt.password or None,
+            identifier=mqtt.client_id,
+        )
+        await self.client.__aenter__()
+        log.info(f"HA MQTT publisher connected to {mqtt.broker}:{mqtt.port}")
+
+    async def stop(self):
+        if self.client:
+            await self.client.__aexit__(None, None, None)
+            self.client = None
+            log.info("HA MQTT publisher stopped")
+
+    async def publish_point(self, device_id: str, fields: dict[str, Any]):
+        """Main entry point – call this from the /ha/state endpoint."""
+        device = self.config.find_device(device_id)
+        if not device:
+            return
+
+        # Publish device discovery once
+        if device.id not in self._discovered:
+            await self._publish_device_discovery(device)
+            self._discovered.add(device.id)
+
+        # Publish state for every field that has a matching sensor
+        for field_name, value in fields.items():
+            sensor = device.find_sensor(field_name)
+            if sensor:
+                await self._publish_state(device, sensor, value)
+
+    async def _publish_device_discovery(self, device: HADevice):
+        if not self.client:
+            return
+        mqtt = self.config.mqtt
+        topic = f"{mqtt.discovery_prefix}/device/{device.id}/config"
+        # topic = "testtopic"
+        payload = device.build_discovery_payload(mqtt.state_prefix)
+
+        await self.client.publish(topic, json.dumps(payload), qos=0, retain=False)
+        log.info(f"HA device discovery published for {device.id}")
+        log.debug(f"HA discovery → {topic} = {payload}")
+
+    async def _publish_state(self, device: HADevice, sensor: HASensor, value: Any):
+        if not self.client:
+            return
+        topic = f"{self.config.mqtt.state_prefix}/{device.id}/{sensor.field}/state"
+        await self.client.publish(topic, str(value), qos=1, retain=False)
+        log.debug(f"HA state → {topic} = {value}")
