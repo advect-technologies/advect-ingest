@@ -3,6 +3,7 @@ import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from random import choices
+from typing import Any
 
 from loguru import logger as log
 
@@ -11,11 +12,11 @@ def generate_random_suffix() -> str:
     return "".join(choices(string.ascii_lowercase + string.digits, k=8))
 
 
-def _resolve_config_path(name="config.toml") -> Path:
+def _resolve_config_path(name: str = "config.toml") -> Path:
     return Path(__file__).parent.parent / "config" / name
 
 
-def _resolve_ingest_path(name="inbound") -> Path:
+def _resolve_ingest_path(name: str = "inbound") -> Path:
     return Path(__file__).parent.parent / "ingest" / name
 
 
@@ -87,7 +88,7 @@ class HADevice:
                 return sensor
         return None
 
-    def build_discovery_payload(self, state_prefix: str) -> dict:
+    def build_discovery_payload(self, state_prefix: str) -> dict[str, Any]:
         """Build the full Device Discovery payload."""
         components = {}
         for sensor in self.sensors:

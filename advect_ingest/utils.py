@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from aiomqtt import Client
+from aiomqtt import Client, MqttError
 from loguru import logger as log
 
 from .config import HAConfig, HADevice, HASensor, IngestConfig
@@ -18,7 +18,7 @@ class IngestQueue:
     def __init__(self, config: IngestConfig):
         self.config = config
         self.queue: asyncio.Queue[DataPoint] = asyncio.Queue()
-        self.flush_task: asyncio.Task | None = None
+        self.flush_task: asyncio.Task[None] | None = None
         self._running = False
         self._lock = asyncio.Lock()
         self._flush_now = asyncio.Event()
@@ -95,11 +95,12 @@ class IngestQueue:
 
 class HAMqttPublisher:
     def __init__(self, config: HAConfig):
-        self.config = config
+        self.config: HAConfig = config
         self.client: Client | None = None
-        self._discovered: set[str] = (
-            set()
-        )  # track device ids we've already sent discovery for
+        self._discovered: set[str] = set()
+        self._task: asyncio.Task[None] | None = None
+        self._running: bool = False
+        self._reconnect_interval: int = 5  # seconds
 
     async def start(self):
         if not self.config.active:
@@ -113,14 +114,48 @@ class HAMqttPublisher:
             password=mqtt.password or None,
             identifier=mqtt.client_id,
         )
-        await self.client.__aenter__()
+        self._running = True
+        self._task = asyncio.create_task(self._connection_loop())
         log.info(f"HA MQTT publisher connected to {mqtt.broker}:{mqtt.port}")
 
     async def stop(self):
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
         if self.client:
-            await self.client.__aexit__(None, None, None)
             self.client = None
-            log.info("HA MQTT publisher stopped")
+        log.info("HA MQTT publisher stopped")
+
+    async def _connection_loop(self):
+        """Keep the connection alive, reconnecting on MqttError."""
+        while self._running:
+            try:
+                if not self.client:
+                    raise RuntimeError("HA MQTT client not initialized")
+                async with self.client:
+                    log.info(f"HA MQTT connected to {self.config.mqtt.broker}")
+                    # Re-publish discovery + last states after (re)connect
+                    await self._on_connected()
+                    while self._running:
+                        await asyncio.sleep(1)
+            except MqttError as e:
+                log.warning(
+                    f"HA MQTT connection lost: {e}. Reconnecting in {self._reconnect_interval}s..."
+                )
+                await asyncio.sleep(self._reconnect_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.error(f"Unexpected error in HA MQTT loop: {e}")
+                await asyncio.sleep(self._reconnect_interval)
+
+    async def _on_connected(self):
+        """Called after every successful connect/reconnect."""
+        self._discovered.clear()  # force re-discovery
 
     async def publish_point(self, device_id: str, fields: dict[str, Any]):
         """Main entry point – call this from the /ha/state endpoint."""
@@ -147,7 +182,7 @@ class HAMqttPublisher:
         # topic = "testtopic"
         payload = device.build_discovery_payload(mqtt.state_prefix)
 
-        await self.client.publish(topic, json.dumps(payload), qos=0, retain=False)
+        await self.client.publish(topic, json.dumps(payload), qos=0, retain=True)
         log.info(f"HA device discovery published for {device.id}")
         log.debug(f"HA discovery → {topic} = {payload}")
 
@@ -155,5 +190,5 @@ class HAMqttPublisher:
         if not self.client:
             return
         topic = f"{self.config.mqtt.state_prefix}/{device.id}/{sensor.field}/state"
-        await self.client.publish(topic, str(value), qos=1, retain=False)
+        await self.client.publish(topic, str(value), qos=1, retain=True)
         log.debug(f"HA state → {topic} = {value}")
