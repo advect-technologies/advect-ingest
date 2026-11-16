@@ -1,11 +1,14 @@
 import asyncio
 import datetime as dt
+import json
 import uuid
 from pathlib import Path
+from typing import Any
 
+from aiomqtt import Client, MqttError
 from loguru import logger as log
 
-from .config import IngestConfig
+from .config import HAConfig, HADevice, HASensor, IngestConfig
 from .models import DataPoint
 
 
@@ -15,7 +18,7 @@ class IngestQueue:
     def __init__(self, config: IngestConfig):
         self.config = config
         self.queue: asyncio.Queue[DataPoint] = asyncio.Queue()
-        self.flush_task: asyncio.Task | None = None
+        self.flush_task: asyncio.Task[None] | None = None
         self._running = False
         self._lock = asyncio.Lock()
         self._flush_now = asyncio.Event()
@@ -88,3 +91,118 @@ class IngestQueue:
         except Exception as e:
             log.error(f"Flush failed: {e}")
             # Could re-queue or handle errors here
+
+
+class HAMqttPublisher:
+    def __init__(self, config: HAConfig):
+        self.config: HAConfig = config
+        self.client: Client | None = None
+        self._discovered: set[str] = set()
+        self._task: asyncio.Task[None] | None = None
+        self._running: bool = False
+        self._reconnect_interval: int = 5  # seconds
+        self._connection_lost: asyncio.Event = asyncio.Event()
+
+    async def start(self):
+        if not self.config.active:
+            return
+
+        mqtt = self.config.mqtt
+        self.client = Client(
+            hostname=mqtt.broker,
+            port=mqtt.port,
+            username=mqtt.username or None,
+            password=mqtt.password or None,
+            identifier=mqtt.client_id,
+        )
+        self._running = True
+        self._task = asyncio.create_task(self._connection_loop())
+        log.info(f"HA MQTT publisher connected to {mqtt.broker}:{mqtt.port}")
+
+    async def stop(self):
+        self._running = False
+        self._connection_lost.set()
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        if self.client:
+            self.client = None
+        log.info("HA MQTT publisher stopped")
+
+    async def _connection_loop(self):
+        """Keep the connection alive, reconnecting on MqttError."""
+        while self._running:
+            try:
+                if not self.client:
+                    raise RuntimeError("HA MQTT client not initialized")
+                async with self.client:
+                    self._connection_lost.clear()
+                    log.info(f"HA MQTT connected to {self.config.mqtt.broker}")
+                    # Re-publish discovery + last states after (re)connect
+                    await self._on_connected()
+                    await self._connection_lost.wait()
+            except MqttError as e:
+                log.warning(
+                    f"HA MQTT connection lost: {e}. Reconnecting in {self._reconnect_interval}s..."
+                )
+                await asyncio.sleep(self._reconnect_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.error(f"Unexpected error in HA MQTT loop: {e}")
+                await asyncio.sleep(self._reconnect_interval)
+
+    async def _on_connected(self):
+        """Called after every successful connect/reconnect."""
+        self._discovered.clear()  # force re-discovery
+
+    async def publish_point(self, device_id: str, fields: dict[str, Any]):
+        """Main entry point – call this from the /ha/state endpoint."""
+        device = self.config.find_device(device_id)
+        if not device:
+            return
+
+        # Publish device discovery once
+        if device.id not in self._discovered:
+            await self._publish_device_discovery(device)
+            self._discovered.add(device.id)
+
+        # Publish state for every field that has a matching sensor
+        for field_name, value in fields.items():
+            sensor = device.find_sensor(field_name)
+            if sensor:
+                await self._publish_state(device, sensor, value)
+
+    async def _publish_device_discovery(self, device: HADevice):
+        if not self.client:
+            return
+        mqtt = self.config.mqtt
+        topic = f"{mqtt.discovery_prefix}/device/{device.id}/config"
+        # topic = "testtopic"
+        payload = device.build_discovery_payload(mqtt.state_prefix)
+        try:
+            await self.client.publish(topic, json.dumps(payload), qos=0, retain=True)
+            log.info(f"HA device discovery published for {device.id}")
+        except MqttError as e:
+            log.error(f"Failed to publish discovery for {device.id}: {e}")
+            self._connection_lost.set()
+        except Exception as e:
+            log.error(f"Failed to publish discovery for {device.id}: {e}")
+            self._connection_lost.set()
+        log.debug(f"HA discovery → {topic} = {payload}")
+
+    async def _publish_state(self, device: HADevice, sensor: HASensor, value: Any):
+        if not self.client:
+            return
+        topic = f"{self.config.mqtt.state_prefix}/{device.id}/{sensor.field}/state"
+        try:
+            await self.client.publish(topic, str(value), qos=1, retain=True)
+            log.debug(f"HA state → {topic} = {value}")
+        except MqttError as e:
+            log.error(f"Failed to publish state for {topic}: {e}")
+            self._connection_lost.set()
+        except Exception as e:
+            log.error(f"Failed to publish state for {topic}: {e}")
