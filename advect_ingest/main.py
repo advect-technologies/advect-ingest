@@ -1,4 +1,5 @@
 import asyncio
+import datetime as dt
 from contextlib import asynccontextmanager
 from sys import platform, stderr
 
@@ -8,8 +9,8 @@ from fastapi.responses import RedirectResponse
 from loguru import logger as log
 
 from .config import RootConfig
-from .models import DataPoint
-from .utils import HAMqttPublisher, IngestQueue
+from .models import DataPoint, LiteBatch
+from .utils import HAMqttPublisher, IngestQueue, resolve_lite_point
 
 if platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -84,3 +85,37 @@ async def ha_state(point: DataPoint):
     await ha_publisher.publish_point(device_id, point.fields)
 
     return {"status": "ok"}
+
+
+@app.post("/ingest/litebatch", status_code=status.HTTP_202_ACCEPTED)
+async def ingest_litebatch(batch: LiteBatch):
+    """
+    Accept a batch from low-power devices that may use relative timestamps.
+    Resolves each point into a normal DataPoint and queues it.
+    Points missing both absolute and relative time are skipped.
+    """
+    arrival_time = dt.datetime.now(dt.UTC).timestamp()
+    accepted = 0
+    rejected = 0
+
+    for raw in batch.points:
+        dp = resolve_lite_point(
+            point=raw,
+            measurement=batch.measurement,
+            global_tags=batch.global_tags,
+            arrival_time=arrival_time,
+        )
+        if dp is None:
+            rejected += 1
+            log.warning(f"Rejected lite point (no timestamp): {raw}")
+            continue
+
+        await ingest_queue.add(dp)
+        accepted += 1
+
+    log.info(f"Litebatch: accepted={accepted}, rejected={rejected}")
+    return {
+        "status": "accepted",
+        "accepted": accepted,
+        "rejected": rejected,
+    }

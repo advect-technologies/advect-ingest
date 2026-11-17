@@ -9,7 +9,35 @@ from aiomqtt import Client, MqttError
 from loguru import logger as log
 
 from .config import HAConfig, HADevice, HASensor, IngestConfig
-from .models import DataPoint
+from .models import DataPoint, LitePoint
+
+
+def resolve_lite_point(
+    point: LitePoint,
+    measurement: str,
+    global_tags: dict[str, str],
+    arrival_time: float,
+) -> DataPoint | None:
+    """Turn a LitePoint into a normal DataPoint, or None if it should be rejected."""
+    # Timestamp
+    if point.time is not None:
+        ts = float(point.time)
+    elif point.rtime_ms is not None:
+        ts = arrival_time + (point.rtime_ms / 1000.0)
+    elif point.rtime_s is not None:
+        ts = arrival_time + float(point.rtime_s)
+    else:
+        return None  # already validated, but be safe
+
+    # Tags: global first, then point-level overrides
+    tags = {**global_tags, **point.tags}
+
+    return DataPoint(
+        measurement=measurement,
+        time=ts,
+        tags=tags,
+        fields=point.fields,
+    )
 
 
 class IngestQueue:
